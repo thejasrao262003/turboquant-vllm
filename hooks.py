@@ -21,15 +21,18 @@ vLLM executor hierarchy (tried outermost-first):
 
 pickle serialization note:
     collective_rpc transports the worker function via pickle/msgspec.
-    _worker_fn must be a module-level function (not a closure or lambda)
-    so pickle can reference it by fully-qualified name:
-        turboquant_vllm.hooks._worker_fn
+    install_hooks() builds a functools.partial bound to the caller's
+    key_bits/value_bits/buffer_size and passes that to collective_rpc.
+    functools.partial is picklable in Python 3 — pickle serializes the
+    underlying function by name (turboquant_vllm.hooks._worker_fn_impl,
+    which must remain module-level) and embeds the bound args by value.
     Set VLLM_ALLOW_INSECURE_SERIALIZATION=1 in your environment if vLLM
-    refuses to serialize the function (vLLM >= 0.19 defaults to msgspec;
+    refuses to serialize the partial (vLLM >= 0.19 defaults to msgspec;
     this env var enables the pickle fallback).
 """
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,26 +40,24 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Worker-side function — MUST stay module-level for pickle by name
+# Worker-side implementation — MUST stay module-level so pickle can
+# reference it by name as turboquant_vllm.hooks._worker_fn_impl.
+# install_hooks() wraps it in functools.partial to bind caller parameters.
 # ---------------------------------------------------------------------------
 
-def _worker_fn(worker) -> int:
-    """Install TurboQuant hooks on a single vLLM worker.
+def _worker_fn_impl(worker, *, key_bits: int, value_bits: int, buffer_size: int) -> int:
+    """Install TurboQuant hooks on a single vLLM worker with given parameters.
 
-    Called on each GPU worker via collective_rpc.  Parameters are hardcoded
-    to the 3k2v configuration (3-bit keys, 2-bit values, 128-token ring
-    buffer) from the TurboQuant paper.  The first 4 attention layers are
-    left uncompressed (initial_layers_count=4 in TurboQuant defaults).
-
+    Called on each GPU worker via collective_rpc (as a functools.partial).
     Returns the number of attention layers hooked.
     """
     from turboquant.vllm_attn_backend import MODE_ACTIVE, install_turboquant_hooks
 
     hooks = install_turboquant_hooks(
         worker.model_runner,
-        key_bits=3,
-        value_bits=2,
-        buffer_size=128,
+        key_bits=key_bits,
+        value_bits=value_bits,
+        buffer_size=buffer_size,
         mode=MODE_ACTIVE,
     )
     return len(hooks) if isinstance(hooks, list) else (hooks or 0)
@@ -98,22 +99,22 @@ def install_hooks(
         Number of attention layers hooked (first 4 are skipped by TurboQuant
         design; for a 28-layer model expect 24).
 
-    Note:
-        ``key_bits``, ``value_bits``, and ``buffer_size`` are applied via the
-        v0 direct path only.  In the v1 MP path the worker function
-        ``_worker_fn`` is pickled by name and uses its own hardcoded 3k2v
-        defaults.  If you need custom values in the v1 MP path, fork
-        ``_worker_fn`` as a module-level function with your desired values.
-
     Raises:
         RuntimeError: If no supported executor path is found.
     """
+    worker_fn = functools.partial(
+        _worker_fn_impl,
+        key_bits=key_bits,
+        value_bits=value_bits,
+        buffer_size=buffer_size,
+    )
+
     engine = llm.llm_engine
 
     # ── v1 MP path: SyncMPClient sits at engine_core, exposes collective_rpc ──
     core = getattr(engine, "engine_core", None)
     if core is not None and hasattr(core, "collective_rpc"):
-        return _sum_rpc(core.collective_rpc(_worker_fn))
+        return _sum_rpc(core.collective_rpc(worker_fn))
 
     # ── v1 in-process path ──
     if core is not None:
@@ -121,7 +122,7 @@ def install_hooks(
         if inner is not None:
             executor = getattr(inner, "model_executor", None)
             if executor is not None and hasattr(executor, "collective_rpc"):
-                return _sum_rpc(executor.collective_rpc(_worker_fn))
+                return _sum_rpc(executor.collective_rpc(worker_fn))
 
     # ── v0 path: single driver worker, direct model_runner access ──
     executor = getattr(engine, "model_executor", None)

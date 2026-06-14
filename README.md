@@ -76,11 +76,9 @@ Install TurboQuant hooks on all workers of a `vllm.LLM` engine.
 
 **Raises** `RuntimeError` if no supported executor path is found.
 
-> **Note on `key_bits` / `value_bits` in v1 MP mode**: in the vLLM v1
-> multi-process executor (the common Modal/cloud case), the worker function
-> is serialised by name via pickle and uses hardcoded 3k2v defaults.
-> Custom values are applied in the v0 single-process path. See `hooks.py`
-> for details and how to fork `_worker_fn` for custom configurations.
+> Parameters are applied across all executor paths. `install_hooks()` builds
+> a `functools.partial` bound to the caller's values and passes that to
+> `collective_rpc`, so `key_bits=4` in v1 MP mode works as expected.
 
 ## vLLM executor compatibility
 
@@ -106,7 +104,6 @@ Validate perplexity on your specific model against the FP16 baseline before runn
 
 - **Hybrid decode**: TurboQuant's `MODE_ACTIVE` dequantises the entire compressed history to float32 on every decode step. Latency grows with context length but does not affect output quality.
 - **No prefix caching**: set `enable_prefix_caching=False` when constructing `LLM`.
-- **v1 MP custom parameters**: `key_bits`/`value_bits`/`buffer_size` are ignored in the v1 MP path (see note above).
 
 ## Citation
 
