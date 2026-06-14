@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "turboquant_vllm"
+version = "0.1.0"
+description = "vLLM integration layer for TurboQuant KV-cache compression (Zandieh et al., 2024)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "vllm>=0.16",
+    "scipy",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+"TurboQuant paper" = "https://arxiv.org/abs/2407.11110"
+"TurboQuant source" = "https://github.com/0xSero/turboquant"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["turboquant_vllm*"]
